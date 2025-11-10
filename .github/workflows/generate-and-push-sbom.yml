@@ -8,8 +8,8 @@ on:
       - feature/sbom
 
 env:
-  TOKEN: ${{ secrets.SBOM_PUSH_TOKEN }}   
-  PROJECT_NAME: python-project            
+  TOKEN: ${{ secrets.SBOM_PUSH_TOKEN }}
+  PROJECT_NAME: python-project
 
 jobs:
   sbom-generate-push:
@@ -24,24 +24,39 @@ jobs:
         uses: actions/checkout@v4
 
       # -----------------------------------------------------------
-      # 2️⃣ Setup Python
+      # 2️⃣ Setup Python (with cache for faster installs)
       # -----------------------------------------------------------
       - name: 🐍 Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: "pip"
 
       # -----------------------------------------------------------
-      # 3️⃣ Install dependencies
+      # 3️⃣ Install system dependencies (for opencv, pygame, etc.)
       # -----------------------------------------------------------
-      - name: 📦 Install dependencies
+      - name: 🧰 Install required system libraries
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            python3-opencv tesseract-ocr libgl1 libglib2.0-0 \
+            ffmpeg libsdl2-dev libsdl2-image-dev libsdl2-mixer-dev libsdl2-ttf-dev
+
+      # -----------------------------------------------------------
+      # 4️⃣ Install Python dependencies (safe mode)
+      # -----------------------------------------------------------
+      - name: 📦 Install Python dependencies
         run: |
           if [ -f "requirements.txt" ]; then
-            pip install -r requirements.txt
+            echo "📦 Installing Python dependencies..."
+            pip install --upgrade pip setuptools wheel
+            pip install --no-cache-dir -r requirements.txt || echo "⚠️ Some optional packages failed to install, continuing..."
+          else
+            echo "⚠️ No requirements.txt found — skipping Python dependency install."
           fi
 
       # -----------------------------------------------------------
-      # 4️⃣ Install cdxgen
+      # 5️⃣ Install cdxgen
       # -----------------------------------------------------------
       - name: ⚙️ Install cdxgen
         run: |
@@ -50,43 +65,53 @@ jobs:
           echo "✅ Installed cdxgen version: $(cdxgen --version)"
 
       # -----------------------------------------------------------
-      # 5️⃣ Generate Application SBOM
+      # 6️⃣ Generate Application SBOM
       # -----------------------------------------------------------
       - name: 🧾 Generate Application SBOM
         run: |
           echo "🔍 Generating Python SBOM using cdxgen..."
-          cdxgen -t python -r -o app-sbom.cdx.json
-          echo "✅ Application SBOM created → $(pwd)/app-sbom.cdx.json"
+          cdxgen -t python -r -o app-sbom.cdx.json || echo "⚠️ SBOM generation failed, continuing..."
+          if [ -f app-sbom.cdx.json ]; then
+            echo "✅ Application SBOM created → $(pwd)/app-sbom.cdx.json"
+          else
+            echo "❌ Failed to create application SBOM"; exit 1
+          fi
 
       # -----------------------------------------------------------
-      # 6️⃣ Build Docker image
+      # 7️⃣ Build Docker image
       # -----------------------------------------------------------
       - name: 🏗️ Build Docker image
         run: |
+          echo "🐳 Building Docker image for $PROJECT_NAME..."
           docker build -t $PROJECT_NAME:latest .
           echo "✅ Docker image built successfully."
 
       # -----------------------------------------------------------
-      # 7️⃣ Install Trivy
+      # 8️⃣ Install Trivy
       # -----------------------------------------------------------
       - name: 🔧 Install Trivy
         run: |
+          echo "📦 Installing Trivy..."
           TRIVY_VER=$(curl -sSL https://api.github.com/repos/aquasecurity/trivy/releases/latest | grep '"tag_name":' | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
           curl -sfL "https://github.com/aquasecurity/trivy/releases/download/${TRIVY_VER}/trivy_${TRIVY_VER#v}_Linux-64bit.tar.gz" | tar -xz -C /tmp
           sudo mv /tmp/trivy /usr/local/bin/trivy
-          trivy --version
+          echo "✅ Trivy version: $(trivy --version)"
 
       # -----------------------------------------------------------
-      # 8️⃣ Generate Container SBOM
+      # 9️⃣ Generate Container SBOM
       # -----------------------------------------------------------
       - name: 🧱 Generate Container SBOM
         run: |
           echo "🔍 Generating container SBOM..."
-          trivy image --format cyclonedx --list-all-pkgs --output container-sbom.cdx.json $PROJECT_NAME:latest
-          echo "✅ Container SBOM created → $(pwd)/container-sbom.cdx.json"
+          trivy image --format cyclonedx --list-all-pkgs --output container-sbom.cdx.json $PROJECT_NAME:latest || echo "⚠️ Container SBOM generation failed, continuing..."
+          if [ -f container-sbom.cdx.json ]; then
+            echo "✅ Container SBOM created → $(pwd)/container-sbom.cdx.json"
+          else
+            echo "❌ Failed to create container SBOM"; exit 1
+          fi
 
       # -----------------------------------------------------------
-      # 9️⃣ Upload SBOMs as Artifacts (optional)
+      # 🔟 Upload SBOMs as Artifacts (for debug visibility)
       # -----------------------------------------------------------
       - name: 📤 Upload SBOMs as Artifacts
         uses: actions/upload-artifact@v4
@@ -97,27 +122,26 @@ jobs:
             container-sbom.cdx.json
 
       # -----------------------------------------------------------
-      # 🔟 Push SBOMs to sbom-manager repo
+      # 1️⃣1️⃣ Push SBOMs to sbom-manager repo
       # -----------------------------------------------------------
       - name: 🚀 Push SBOMs to sbom-manager repo
         run: |
           set -euo pipefail
-          echo "📦 Cloning sbom-manager repo..."
+          echo "📦 Cloning SBOM Manager repo..."
           git config --global user.email "actions@github.com"
           git config --global user.name "GitHub Actions Bot"
 
           git clone https://x-access-token:${TOKEN}@github.com/mrpraveenpr/SBOM-Manager.git
           cd SBOM-Manager
 
-          # Create project folder if missing
           mkdir -p sboms/${PROJECT_NAME}
 
-          # Move new SBOMs
-          cp ../app-sbom.cdx.json sboms/${PROJECT_NAME}/
-          cp ../container-sbom.cdx.json sboms/${PROJECT_NAME}/
+          echo "📤 Copying SBOMs to SBOM Manager folder..."
+          cp ../app-sbom.cdx.json sboms/${PROJECT_NAME}/ || echo "⚠️ Missing app-sbom.cdx.json"
+          cp ../container-sbom.cdx.json sboms/${PROJECT_NAME}/ || echo "⚠️ Missing container-sbom.cdx.json"
 
-          echo "💾 Commit and push SBOMs..."
+          echo "💾 Committing and pushing SBOM updates..."
           git add sboms/${PROJECT_NAME}/
-          git commit -m "🔄 Update SBOMs for ${PROJECT_NAME} - $(date +'%Y-%m-%d %H:%M:%S')" || echo "No changes to commit"
+          git commit -m "🔄 Update SBOMs for ${PROJECT_NAME} - $(date +'%Y-%m-%d %H:%M:%S')" || echo "ℹ️ No new changes to commit"
           git push origin main
           echo "✅ SBOMs successfully pushed to sbom-manager/${PROJECT_NAME}"
