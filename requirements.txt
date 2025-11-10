@@ -35,7 +35,6 @@ fpdf
 mysql-connector-repackaged
 word2number
 tornado
-obs
 todo
 oauth2client
 keras
