@@ -142,7 +142,7 @@ jobs:
           git config --global user.name "GitHub Actions Bot"
 
           # ✅ Use GITHUB_TOKEN for authentication
-          git clone https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/mrpraveenpr/SBOM-Manager.git
+          git clone https://x-access-token:${{ secrets.SBOM_PUSH_TOKEN }}@github.com/mrpraveenpr/SBOM-Manager.git
           cd SBOM-Manager
 
           mkdir -p sboms/${PROJECT_NAME}
