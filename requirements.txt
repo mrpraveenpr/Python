@@ -14,7 +14,6 @@ caller
 watchdog
 PyQt5
 numpy
-fileinfo
 backend
 win10toast
 Counter
