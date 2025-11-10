@@ -1,0 +1,123 @@
+name: 🧾 Generate and Push SBOMs to SBOM Manager
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - feature/sbom
+
+env:
+  TOKEN: ${{ secrets.SBOM_PUSH_TOKEN }}   # 🔑 Personal Access Token for cross-repo push
+  PROJECT_NAME: python-project            # 👈 Change this to match your project folder name inside sbom-manager
+
+jobs:
+  sbom-generate-push:
+    name: Generate and Push SBOMs
+    runs-on: ubuntu-latest
+
+    steps:
+      # -----------------------------------------------------------
+      # 1️⃣ Checkout source code
+      # -----------------------------------------------------------
+      - name: 🧩 Checkout source
+        uses: actions/checkout@v4
+
+      # -----------------------------------------------------------
+      # 2️⃣ Setup Python
+      # -----------------------------------------------------------
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # -----------------------------------------------------------
+      # 3️⃣ Install dependencies
+      # -----------------------------------------------------------
+      - name: 📦 Install dependencies
+        run: |
+          if [ -f "requirements.txt" ]; then
+            pip install -r requirements.txt
+          fi
+
+      # -----------------------------------------------------------
+      # 4️⃣ Install cdxgen
+      # -----------------------------------------------------------
+      - name: ⚙️ Install cdxgen
+        run: |
+          echo "📦 Installing CycloneDX Generator (cdxgen)..."
+          npm install -g @cyclonedx/cdxgen@10.10.3
+          echo "✅ Installed cdxgen version: $(cdxgen --version)"
+
+      # -----------------------------------------------------------
+      # 5️⃣ Generate Application SBOM
+      # -----------------------------------------------------------
+      - name: 🧾 Generate Application SBOM
+        run: |
+          echo "🔍 Generating Python SBOM using cdxgen..."
+          cdxgen -t python -r -o app-sbom.cdx.json
+          echo "✅ Application SBOM created → $(pwd)/app-sbom.cdx.json"
+
+      # -----------------------------------------------------------
+      # 6️⃣ Build Docker image
+      # -----------------------------------------------------------
+      - name: 🏗️ Build Docker image
+        run: |
+          docker build -t $PROJECT_NAME:latest .
+          echo "✅ Docker image built successfully."
+
+      # -----------------------------------------------------------
+      # 7️⃣ Install Trivy
+      # -----------------------------------------------------------
+      - name: 🔧 Install Trivy
+        run: |
+          TRIVY_VER=$(curl -sSL https://api.github.com/repos/aquasecurity/trivy/releases/latest | grep '"tag_name":' | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+          curl -sfL "https://github.com/aquasecurity/trivy/releases/download/${TRIVY_VER}/trivy_${TRIVY_VER#v}_Linux-64bit.tar.gz" | tar -xz -C /tmp
+          sudo mv /tmp/trivy /usr/local/bin/trivy
+          trivy --version
+
+      # -----------------------------------------------------------
+      # 8️⃣ Generate Container SBOM
+      # -----------------------------------------------------------
+      - name: 🧱 Generate Container SBOM
+        run: |
+          echo "🔍 Generating container SBOM..."
+          trivy image --format cyclonedx --list-all-pkgs --output container-sbom.cdx.json $PROJECT_NAME:latest
+          echo "✅ Container SBOM created → $(pwd)/container-sbom.cdx.json"
+
+      # -----------------------------------------------------------
+      # 9️⃣ Upload SBOMs as Artifacts (optional)
+      # -----------------------------------------------------------
+      - name: 📤 Upload SBOMs as Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-sboms
+          path: |
+            app-sbom.cdx.json
+            container-sbom.cdx.json
+
+      # -----------------------------------------------------------
+      # 🔟 Push SBOMs to sbom-manager repo
+      # -----------------------------------------------------------
+      - name: 🚀 Push SBOMs to sbom-manager repo
+        run: |
+          set -euo pipefail
+          echo "📦 Cloning sbom-manager repo..."
+          git config --global user.email "actions@github.com"
+          git config --global user.name "GitHub Actions Bot"
+
+          git clone https://x-access-token:${TOKEN}@github.com/mrpraveenpr/SBOM-Manager.git
+          cd SBOM-Manager
+
+          # Create project folder if missing
+          mkdir -p sboms/${PROJECT_NAME}
+
+          # Move new SBOMs
+          cp ../app-sbom.cdx.json sboms/${PROJECT_NAME}/
+          cp ../container-sbom.cdx.json sboms/${PROJECT_NAME}/
+
+          echo "💾 Commit and push SBOMs..."
+          git add sboms/${PROJECT_NAME}/
+          git commit -m "🔄 Update SBOMs for ${PROJECT_NAME} - $(date +'%Y-%m-%d %H:%M:%S')" || echo "No changes to commit"
+          git push origin main
+          echo "✅ SBOMs successfully pushed to sbom-manager/${PROJECT_NAME}"
